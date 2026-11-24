@@ -33,10 +33,10 @@ jobs:
       - name: Start LocalStack (if AWS credentials are not provided)
         if: steps.mode.outputs.use_localstack == 'true'
         run: |
-          docker run -d --name localstack -p 4566:4566 -e SERVICES=ec2 localstack/localstack:latest
+          docker run -d --name localstack -p 127.0.0.1:4566:4566 -e SERVICES=ec2 -e EAGER_SERVICE_LOADING=1 localstack/localstack:3.0
           echo "Waiting for LocalStack to be ready..."
           for i in {1..30}; do
-            if curl -s http://localhost:4566/_localstack/health | grep -q '"ec2"'; then
+            if curl -s http://127.0.0.1:4566/_localstack/health | grep -q '"ec2"'; then
               echo "LocalStack EC2 service is ready!"
               break
             fi
@@ -116,7 +116,7 @@ jobs:
           APP_PORT: ${{ env.APP_PORT }}
         run: |
           docker pull ${DOCKER_USER}/${IMAGE_NAME}:latest
-          docker run -d --name volodymyr-app -p ${APP_PORT}:${APP_PORT} -e APP_ENV=production ${DOCKER_USER}/${IMAGE_NAME}:latest
+          docker run -d --name volodymyr-app -p 127.0.0.1:${APP_PORT}:${APP_PORT} -e APP_ENV=production ${DOCKER_USER}/${IMAGE_NAME}:latest
           sleep 3
-          curl -f http://localhost:${APP_PORT}/health
+          curl -f http://127.0.0.1:${APP_PORT}/health
           docker rm -f volodymyr-app

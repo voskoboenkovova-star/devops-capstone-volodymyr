@@ -1,4 +1,4 @@
-terraform {
+﻿terraform {
   required_version = ">= 1.5.0"
 
   required_providers {
@@ -18,7 +18,7 @@ provider "aws" {
   dynamic "endpoints" {
     for_each = var.use_localstack ? [1] : []
     content {
-      ec2 = "http://localhost:4566"
+      ec2 = "http://127.0.0.1:4566"
     }
   }
 }
