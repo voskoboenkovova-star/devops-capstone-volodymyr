@@ -1,0 +1,29 @@
+# Node.js
+node_modules/
+npm-debug.log*
+.env
+.env.*
+
+# Terraform
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!terraform.tfvars.example
+crash.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+
+# SSH Keys & Secrets
+*.pem
+*.key
+id_rsa*
+
+# OS & Editor
+.DS_Store
+Thumbs.db
+.vscode/
