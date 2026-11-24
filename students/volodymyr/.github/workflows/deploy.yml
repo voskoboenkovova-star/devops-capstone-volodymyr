@@ -1,4 +1,4 @@
-name: Build, Push Docker Image and Deploy to EC2
+﻿name: Build, Push Docker Image and Deploy to EC2
 
 on:
   push:
@@ -19,6 +19,30 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Determine AWS mode
+        id: mode
+        env:
+          AWS_KEY: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        run: |
+          if [ -n "$AWS_KEY" ]; then
+            echo "use_localstack=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "use_localstack=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Start LocalStack (if AWS credentials are not provided)
+        if: steps.mode.outputs.use_localstack == 'true'
+        run: |
+          docker run -d --name localstack -p 4566:4566 -e SERVICES=ec2 localstack/localstack:latest
+          echo "Waiting for LocalStack to be ready..."
+          for i in {1..30}; do
+            if curl -s http://localhost:4566/_localstack/health | grep -q '"ec2"'; then
+              echo "LocalStack EC2 service is ready!"
+              break
+            fi
+            sleep 2
+          done
+
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
@@ -27,19 +51,19 @@ jobs:
       - name: Terraform Init, Plan and Apply
         working-directory: ${{ env.PROJECT_DIR }}/infra
         env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID || 'test' }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY || 'test' }}
         run: |
           terraform init -input=false
-          terraform plan -input=false -out=tfplan
+          terraform plan -input=false -var="use_localstack=${{ steps.mode.outputs.use_localstack }}" -out=tfplan
           terraform apply -input=false tfplan
 
       - name: Get EC2 Public IP
         id: ec2
         working-directory: ${{ env.PROJECT_DIR }}/infra
         env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID || 'test' }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY || 'test' }}
         run: |
           EC2_IP=$(terraform output -raw instance_public_ip)
           echo "ip=${EC2_IP}" >> "$GITHUB_OUTPUT"
@@ -60,7 +84,8 @@ jobs:
             ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:latest
             ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
 
-      - name: Deploy container to EC2 via SSH
+      - name: Deploy container to EC2 via SSH (AWS mode)
+        if: steps.mode.outputs.use_localstack == 'false'
         env:
           EC2_HOST: ${{ steps.ec2.outputs.ip }}
           EC2_SSH_KEY_B64: ${{ secrets.EC2_SSH_KEY_B64 }}
@@ -82,3 +107,16 @@ jobs:
               -e PORT=${APP_PORT} \
               ${DOCKER_USER}/${IMAGE_NAME}:latest
           "
+
+      - name: Verify deployed container from Docker Hub (LocalStack mode)
+        if: steps.mode.outputs.use_localstack == 'true'
+        env:
+          DOCKER_USER: ${{ secrets.DOCKER_USERNAME }}
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          APP_PORT: ${{ env.APP_PORT }}
+        run: |
+          docker pull ${DOCKER_USER}/${IMAGE_NAME}:latest
+          docker run -d --name volodymyr-app -p ${APP_PORT}:${APP_PORT} -e APP_ENV=production ${DOCKER_USER}/${IMAGE_NAME}:latest
+          sleep 3
+          curl -f http://localhost:${APP_PORT}/health
+          docker rm -f volodymyr-app
