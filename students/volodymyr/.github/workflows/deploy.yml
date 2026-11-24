@@ -1,0 +1,84 @@
+name: Build, Push Docker Image and Deploy to EC2
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  PROJECT_DIR: students/volodymyr
+  IMAGE_NAME: volodymyr-devops-notes-api
+  APP_PORT: 3000
+
+jobs:
+  provision-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+
+      - name: Terraform Init, Plan and Apply
+        working-directory: ${{ env.PROJECT_DIR }}/infra
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        run: |
+          terraform init -input=false
+          terraform plan -input=false -out=tfplan
+          terraform apply -input=false tfplan
+
+      - name: Get EC2 Public IP
+        id: ec2
+        working-directory: ${{ env.PROJECT_DIR }}/infra
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        run: |
+          EC2_IP=$(terraform output -raw instance_public_ip)
+          echo "ip=${EC2_IP}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_TOKEN }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ env.PROJECT_DIR }}
+          file: ${{ env.PROJECT_DIR }}/Dockerfile
+          push: true
+          tags: |
+            ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:latest
+            ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+
+      - name: Deploy container to EC2 via SSH
+        env:
+          EC2_HOST: ${{ steps.ec2.outputs.ip }}
+          EC2_SSH_KEY_B64: ${{ secrets.EC2_SSH_KEY_B64 }}
+          DOCKER_USER: ${{ secrets.DOCKER_USERNAME }}
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          APP_PORT: ${{ env.APP_PORT }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$EC2_SSH_KEY_B64" | base64 -d > ~/.ssh/id_ec2
+          chmod 600 ~/.ssh/id_ec2
+          ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts
+
+          ssh -i ~/.ssh/id_ec2 ubuntu@"$EC2_HOST" "
+            docker pull ${DOCKER_USER}/${IMAGE_NAME}:latest &&
+            docker rm -f volodymyr-app || true &&
+            docker run -d --restart unless-stopped --name volodymyr-app \
+              -p ${APP_PORT}:${APP_PORT} \
+              -e APP_ENV=production \
+              -e PORT=${APP_PORT} \
+              ${DOCKER_USER}/${IMAGE_NAME}:latest
+          "
